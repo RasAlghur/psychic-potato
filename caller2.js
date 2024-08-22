@@ -54,6 +54,8 @@ const MONITORED_CHANNEL_IDS = [
 const caTracker = {};
 const userCallCounts = {}; // To track the number of calls per user
 const userPerformance = {}
+const tokenState = {}; // To track the last market cap checked for each token
+
 
 // Function to update user performance
 function updateUserPerformance(username, isWin) {
@@ -68,28 +70,57 @@ function updateUserPerformance(username, isWin) {
     }
 }
 
+
 // Update ATH and determine if the call is a win or loss
-function updateATH(ca, marketCap, username) {
-    const initialMarketCap = caTracker[ca].initialMarketCap;
-    let isWin = false;
+function updateATH(ca, username) {
+    if (!tokenState[ca] || tokenState[ca].lastCheckedATHMarketCap !== caTracker[ca].allTimeHigh) {
+        const initialMarketCap = caTracker[ca].initialMarketCap;
+        let isWin = false;
 
-    if (marketCap > caTracker[ca].allTimeHigh) {
-        caTracker[ca].allTimeHigh = marketCap;
-        isWin = marketCap > initialMarketCap;
-    } else {
-        isWin = false;
-    }
+        if (caTracker[ca].allTimeHigh > initialMarketCap) {
+            // caTracker[ca].allTimeHigh = marketCap;
+            isWin = true;
+        } else {
+            isWin = false;
+        }
 
-    // Update user performance based on the win/loss determination
-    updateUserPerformance(username, isWin);
+        // Update user performance based on the win/loss determination
+        updateUserPerformance(username, isWin);
 
-    // Log or send an alert if needed
-    if (isWin) {
-        console.log(`User ${username} has a win for token ${ca}`);
-    } else {
-        console.log(`User ${username} has a loss for token ${ca}`);
+        // Log or send an alert if needed
+        if (isWin) {
+            console.log(`User ${username} has a win for token ${ca}`);
+        } else {
+            console.log(`User ${username} has a loss for token ${ca}`);
+        }
+
+        // Update the last checked market cap
+        tokenState[ca] = { lastCheckedMarketCap: caTracker[ca].allTimeHigh };
     }
 }
+
+// Update ATH and determine if the call is a win or loss
+// function updateATH(ca, username) {
+//     const initialMarketCap = caTracker[ca].initialMarketCap;
+//     let isWin = false;
+
+//     if (caTracker[ca].allTimeHigh > initialMarketCap) {
+//         // caTracker[ca].allTimeHigh = marketCap;
+//         isWin = true;
+//     } else {
+//         isWin = false;
+//     }
+
+//     // Update user performance based on the win/loss determination
+//     updateUserPerformance(username, isWin);
+
+//     // Log or send an alert if needed
+//     if (isWin) {
+//         console.log(`User ${username} has a win for token ${ca}`);
+//     } else {
+//         console.log(`User ${username} has a loss for token ${ca}`);
+//     }
+// }
 
 // Example: Function to get user performance
 function getUserPerformance(username) {
@@ -327,10 +358,10 @@ async function checkAllTimeHighs() {
             console.log(`${tokenSymbol} ${caTracker[ca].allTimeHigh}`)
 
             // updateATH(marketCap, caTracker[ca].allTimeHigh)
-            updateATH(ca, marketCap, username);
+            updateATH(ca, username);
 
 
-            if (marketCap > caTracker[ca].allTimeHigh) {
+            if (marketCap >= caTracker[ca].allTimeHigh && marketCap != initialMarketCap) {
                 caTracker[ca].allTimeHigh = marketCap;
                 console.log(`${marketCap} MC did passed ATH of ${caTracker[ca].allTimeHigh}`)
                 const embed = new EmbedBuilder()
