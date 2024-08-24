@@ -57,131 +57,34 @@ const userPerformance = {};
 const tokenState = {}; // To track the last market cap checked for each token
 const processedEntries = new Set();
 
-// Function to update user performance
-// function updateUserPerformance(username, isWin = false) {
-//   console.log({ isWin });
-//   if (!userPerformance[username]) {
-//     userPerformance[username] = { wins: 0, losses: 0 };
-//   }
+// Function to calculate user performance based on caTracker
+function calculateUserPerformance(username) {
+  let wins = 0;
+  let losses = 0;
 
-//   if (isWin) {
-//       userPerformance[username].wins = +1;
-//   } else {
-//       userPerformance[username].losses = +1;
-//   }
-// }
-
-function updateUserPerformance(username, isWin = false, entryId) {
-  // Initialize user performance if it does not exist
-  if (!userPerformance[username]) {
-    userPerformance[username] = { wins: 0, losses: 0 };
+  for (const ca in caTracker) {
+    caTracker[ca].forEach(entry => {
+      if (entry.username === username) {
+        if (entry.isWin) {
+          wins++;
+        } else {
+          losses++;
+        }
+      }
+    });
   }
 
-  // Only update if the entry has not been processed
-  if (!processedEntries.has(entryId)) {
-    // Update wins or losses based on the isWin flag
-    if (isWin) {
-      userPerformance[username].wins += 1; // Increment wins
-    } else {
-      userPerformance[username].losses += 1; // Increment losses
-    }
-
-    // Mark this entry as processed
-    processedEntries.add(entryId);
-
-    // Log the updated performance for debugging
-    console.log(
-      `Updated performance for ${username}:`,
-      userPerformance[username]
-    );
-  } else {
-    console.log(`Entry ${entryId} for ${username} already processed.`);
-  }
+  return { wins, losses };
 }
 
-function updateATH(ca, username) {
-  console.log("ca", ca);
-
-  // Ensure tokenState is initialized for the given token
-  if (!tokenState[ca]) {
-    tokenState[ca] = {}; // Initialize if it does not exist
-  }
-  let isWin;
-  // Check if the ATH has changed since the last check
-  if (
-    !tokenState[ca].lastCheckedATHMarketCap ||
-    tokenState[ca].lastCheckedATHMarketCap !== caTracker[ca].allTimeHigh
-  ) {
-    const initialMarketCap = caTracker[ca].initialMarketCap;
-
-    // Determine if there is a win or loss
-    if (caTracker[ca].allTimeHigh > initialMarketCap) {
-      isWin = true;
-    } else {
-      isWin = false;
-    }
-
-    if (!userPerformance[username]) {
-      userPerformance[username] = { wins: 0, losses: 0 };
-    }
-
-    if (isWin) {
-      userPerformance[username].wins = +1;
-
-      console.log(`User ${username} has a win for token ${ca}`);
-    } else {
-      // if (userPerformance[username].losses >= caTracker)
-      userPerformance[username].losses = +1;
-      console.log(`User ${username} has a loss for token ${ca}`);
-    }
-
-    console.log(userPerformance);
-
-    // Update user performance based on the win/loss determination
-    // updateUserPerformance(username, isWin, ca);
-
-    // Log or send an alert if needed
-    // if (isWin) {
-    //   console.log(`User ${username} has a win for token ${ca}`);
-    // } else {
-    //   console.log(`User ${username} has a loss for token ${ca}`);
-    // }
-
-    // Update the last checked ATH market cap
-    tokenState[ca].lastCheckedATHMarketCap = caTracker[ca].allTimeHigh;
-  } else {
-    isWin = false;
-    // updateUserPerformance(username, isWin);
-  }
-}
-
-// Update ATH and determine if the call is a win or loss
-// function updateATH(ca, username) {
-//     const initialMarketCap = caTracker[ca].initialMarketCap;
-//     let isWin = false;
-
-//     if (caTracker[ca].allTimeHigh > initialMarketCap) {
-//         // caTracker[ca].allTimeHigh = marketCap;
-//         isWin = true;
-//     } else {
-//         isWin = false;
-//     }
-
-//     // Update user performance based on the win/loss determination
-//     updateUserPerformance(username, isWin);
-
-//     // Log or send an alert if needed
-//     if (isWin) {
-//         console.log(`User ${username} has a win for token ${ca}`);
-//     } else {
-//         console.log(`User ${username} has a loss for token ${ca}`);
-//     }
-// }
-
-// Example: Function to get user performance
+// Function to get user performance
 function getUserPerformance(username) {
-  if (userPerformance[username]) {
-    return `User <${username}> has ${userPerformance[username].wins} wins and ${userPerformance[username].losses} losses.`;
+  const { wins, losses } = calculateUserPerformance(username);
+
+  if (wins + losses > 0) {
+    const totalCalls = wins + losses;
+    const winrate = (wins / totalCalls) * 100;
+    return `User <${username}> has ${wins} wins and ${losses} losses. Winrate: ${winrate.toFixed(2)}%`;
   } else {
     return `No performance data available for user <${username}>.`;
   }
@@ -369,6 +272,13 @@ client.on("messageCreate", async (message) => {
     alertChannel.send(performanceMessage);
   }
 
+  // if (content.startsWith(`!perf@${username_entry}`)) {
+  //   console.log("!performance command received");
+  //   const username = username_entry;
+  //   const performanceMessage = getUserPerformance(username);
+  //   alertChannel.send(performanceMessage);
+  // }
+
   const matches = content.match(regex);
   if (matches) {
     matches.forEach(async (ca) => {
@@ -380,7 +290,7 @@ client.on("messageCreate", async (message) => {
       // Check if the token address is already tracked by any user
       if (caTracker[ca]) {
         console.log(
-          `Token address ${ca} already tracked by ${caTracker[ca][0].username}. Ignoring further mentions.`
+          `Token address ${ca} already tracked by ${caTracker[ca][0].username}. Ignoring further mentions ${caTracker[ca].username}.`
         );
         return;
       }
@@ -394,6 +304,8 @@ client.on("messageCreate", async (message) => {
           channelId: message.channel.id,
           username: message.author.username,
           userId: message.author.id, // Store the user ID for future use
+          isWin: false, // Initialize isWin to false
+          roi: null,
         },
       ];
       // Continue with alerting or any other logic
@@ -401,6 +313,105 @@ client.on("messageCreate", async (message) => {
     });
   }
 });
+
+// async function checkAllTimeHighs() {
+//   const alertChannel = client.channels.cache.get(ALERT_CHANNEL_ID);
+
+//   if (!alertChannel) {
+//     console.error(`Alert channel with ID ${ALERT_CHANNEL_ID} not found.`);
+//     return;
+//   }
+
+//   Object.keys(caTracker).forEach(async (ca) => {
+//     // console.log("the ca tracker", caTracker);
+//     console.log(caTracker);
+//     const { marketCap, tokenSymbol } = await getTokenMetadata(ca);
+
+//     const isIncomplete = marketCap == null;
+
+//     if (isIncomplete) {
+//       console.log(`Incomplete MC data for token ${ca}: ATH is ${marketCap}`);
+//       delete caTracker[ca];
+//       // continue; // Skip to the next iteration
+//     }
+
+//     const username = caTracker[ca][0].username;
+//     const userId = caTracker[ca][0].userId; // Retrieve the user ID from caTracker
+//     const usernameMention = `<@${userId}>`;
+//     const usernameCheck = caTracker[ca].username;
+//     console.log("usernameCheck", usernameCheck)
+
+//     // Retrieve the number of calls made by this user
+//     const totalCallsByUser = userCallCounts[username] || 0;
+
+//     // Store the market cap at the time of the call if it doesn't exist
+//     if (!caTracker[ca].initialMarketCap) {
+//       caTracker[ca].initialMarketCap = marketCap;
+//     }
+
+//     // Initialize allTimeHigh with the initial market cap if not already set
+//     if (!caTracker[ca].allTimeHigh) {
+//       caTracker[ca].allTimeHigh = caTracker[ca].initialMarketCap;
+//     }
+
+//     const initialMarketCap = caTracker[ca].initialMarketCap;
+
+//     if(!caTracker[ca].roi) {
+//       // ((ATH - initialMC) / initalMC) * 100
+//       caTracker[ca].roi = ((caTracker[ca].allTimeHigh - caTracker[ca].initialMarketCap) / caTracker[ca].initialMarketCap) * 100;
+//     }
+
+//     console.log(`caTracker[ca].roi for ${tokenSymbol}: ${caTracker[ca].roi}%`);
+//     console.log(`${tokenSymbol} ${caTracker[ca].allTimeHigh}`);
+
+//     // Update ATH before checking if new ATH is reached
+//     // updateATH(ca, username);
+
+//     if (
+//       marketCap > caTracker[ca].allTimeHigh &&
+//       marketCap > initialMarketCap
+//     ) {
+//       caTracker[ca].allTimeHigh = marketCap;
+//       console.log(
+//         `${marketCap} MC did pass ATH of ${caTracker[ca].allTimeHigh}`
+//       );
+
+//       caTracker[ca][0].isWin = true;
+//       const embed = new EmbedBuilder()
+//         .setColor(0xff0000)
+//         .setTitle(
+//           `${tokenSymbol} just reached a marketCap of ${marketCap}, new all-time high!`
+//         )
+//         .setThumbnail(BOT_IMAGE_URL)
+//         .addFields(
+//           {
+//             name: "Caller Profile",
+//             value: `${username} (Total Calls: ${totalCallsByUser})`,
+//             inline: true,
+//           },
+//           {
+//             name: "Called at",
+//             value: initialMarketCap.toString() || "NA",
+//             inline: true,
+//           },
+//           {
+//             name: "ATH MCAP",
+//             value: caTracker[ca].allTimeHigh.toString() || "NA",
+//             inline: true,
+//           }
+//         )
+//         .setTimestamp();
+
+//       alertChannel.send({ embeds: [embed] });
+//     } else {
+//       console.log(
+//         `${marketCap} MC did not pass ATH of ${caTracker[ca].allTimeHigh}`
+//       );
+//     }
+//     console.log("-------------------------------")
+//   });
+//   return;
+// }
 
 async function checkAllTimeHighs() {
   const alertChannel = client.channels.cache.get(ALERT_CHANNEL_ID);
@@ -410,16 +421,13 @@ async function checkAllTimeHighs() {
     return;
   }
 
-  Object.keys(caTracker).forEach(async (ca) => {
-    // console.log("the ca tracker", caTracker);
+  for (const ca of Object.keys(caTracker)) {
     const { marketCap, tokenSymbol } = await getTokenMetadata(ca);
 
-    const isIncomplete = marketCap == null;
-
-    if (isIncomplete) {
+    if (marketCap == null) {
       console.log(`Incomplete MC data for token ${ca}: ATH is ${marketCap}`);
       delete caTracker[ca];
-      // continue; // Skip to the next iteration
+      continue; // Skip to the next iteration
     }
 
     const username = caTracker[ca][0].username;
@@ -440,19 +448,17 @@ async function checkAllTimeHighs() {
     }
 
     const initialMarketCap = caTracker[ca].initialMarketCap;
-    console.log(`${tokenSymbol} ${caTracker[ca].allTimeHigh}`);
 
-    // Update ATH before checking if new ATH is reached
-    updateATH(ca, username);
-
-    if (
-      marketCap >= caTracker[ca].allTimeHigh &&
-      marketCap !== initialMarketCap
-    ) {
+    // Calculate ROI whenever the market cap changes
+    if (marketCap > caTracker[ca].allTimeHigh && marketCap > initialMarketCap) {
       caTracker[ca].allTimeHigh = marketCap;
-      console.log(
-        `${marketCap} MC did pass ATH of ${caTracker[ca].allTimeHigh}`
-      );
+      caTracker[ca][0].isWin = true;
+
+      // Update ROI calculation after setting new ATH
+      caTracker[ca][0].roi = ((caTracker[ca].allTimeHigh - initialMarketCap) / initialMarketCap) * 100;
+
+      console.log(`caTracker[ca].roi for ${tokenSymbol}: ${caTracker[ca][0].roi}%`);
+
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
         .setTitle(
@@ -462,7 +468,7 @@ async function checkAllTimeHighs() {
         .addFields(
           {
             name: "Caller Profile",
-            value: `${username} (Total Calls: ${totalCallsByUser})`,
+            value: `${usernameMention} (Total Calls: ${totalCallsByUser})`,
             inline: true,
           },
           {
@@ -484,8 +490,8 @@ async function checkAllTimeHighs() {
         `${marketCap} MC did not pass ATH of ${caTracker[ca].allTimeHigh}`
       );
     }
-  });
-  return;
+    console.log("-------------------------------")
+  }
 }
 
 async function checkAndSendAlert(ca) {
@@ -512,8 +518,7 @@ async function checkAndSendAlert(ca) {
       }
       acc[entry.channelId].count++;
       acc[entry.channelId].messages.push(
-        `[Message tracked at <t:${Math.floor(entry.timestamp / 1000)}:T>](${
-          entry.messageLink
+        `[Message tracked at <t:${Math.floor(entry.timestamp / 1000)}:T>](${entry.messageLink
         }) by ${entry.username}`
       );
       return acc;
