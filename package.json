@@ -1,0 +1,22 @@
+{
+  "name": "psychic-potato",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js",
+    "start:dev": "nodemon index.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@metaplex-foundation/js": "^0.20.1",
+    "@metaplex-foundation/mpl-auction-house": "^2.5.1",
+    "@solana/spl-token-registry": "^0.2.4574",
+    "@solana/web3.js": "^1.95.3",
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5"
+  }
+}
