@@ -63,7 +63,7 @@ function calculateUserPerformance(username) {
   let losses = 0;
 
   for (const ca in caTracker) {
-    caTracker[ca].forEach(entry => {
+    caTracker[ca].forEach((entry) => {
       if (entry.username === username) {
         if (entry.isWin) {
           wins++;
@@ -84,7 +84,9 @@ function getUserPerformance(username) {
   if (wins + losses > 0) {
     const totalCalls = wins + losses;
     const winrate = (wins / totalCalls) * 100;
-    return `User <${username}> has ${wins} wins and ${losses} losses. Winrate: ${winrate.toFixed(2)}%`;
+    return `User <${username}> has ${wins} wins and ${losses} losses. Winrate: ${winrate.toFixed(
+      2
+    )}%`;
   } else {
     return `No performance data available for user <${username}>.`;
   }
@@ -103,6 +105,26 @@ function formatMarketCap(marketCap) {
   } else {
     return null;
   }
+}
+
+function transformValue(value) {
+  if (typeof value === "string" && value.trim() !== "") {
+    const trimmedValue = value.trim();
+    const lastChar = trimmedValue.slice(-1).toUpperCase();
+    const numericPart = parseFloat(trimmedValue.slice(0, -1).replace(",", ""));
+
+    if (["K", "M", "B"].includes(lastChar)) {
+      switch (lastChar) {
+        case "K":
+          return numericPart * 1e3;
+        case "M":
+          return numericPart * 1e6;
+        case "B":
+          return numericPart * 1e9;
+      }
+    }
+  }
+  return null;
 }
 
 function isValidPublicKey(key) {
@@ -231,6 +253,7 @@ async function getTokenMetadata(ca) {
   }
 
   const formattedMarketCap = formatMarketCap(marketCap);
+
   if (!formattedMarketCap) {
     exchangeValue = `[PumpFun](https://pump.fun/${mintAddress})`;
   }
@@ -272,12 +295,42 @@ client.on("messageCreate", async (message) => {
     alertChannel.send(performanceMessage);
   }
 
-  // if (content.startsWith(`!perf@${username_entry}`)) {
-  //   console.log("!performance command received");
-  //   const username = username_entry;
-  //   const performanceMessage = getUserPerformance(username);
-  //   alertChannel.send(performanceMessage);
-  // }
+  // const user = users.first();
+  // const username = user.username;
+  if (content.startsWith("!info")) {
+    const users = message.mentions.users;
+
+    if (users.size > 0) {
+      // Create a new embed
+      const embed = new EmbedBuilder()
+        .setTitle("User Information")
+        .setColor("#3498db")
+        .setDescription("Here are the details of the mentioned users:")
+        .setFooter({
+          text: `Requested by ${message.author.username}`,
+          iconURL: message.author.displayAvatarURL(),
+        });
+
+      // Iterate through each mentioned user
+      users.forEach((user) => {
+        const username = user.username;
+        console.log(`!info command received from ${username}`);
+        const performanceMessage = getUserPerformance(username);
+
+        // Add user info to embed
+        embed.addFields({
+          name: `${user.username}`,
+          value: performanceMessage,
+          inline: false,
+        });
+      });
+
+      // Send the embed to the alert channel
+      alertChannel.send({ embeds: [embed] });
+    } else {
+      message.channel.send("No users mentioned.");
+    }
+  }
 
   const matches = content.match(regex);
   if (matches) {
@@ -455,9 +508,15 @@ async function checkAllTimeHighs() {
       caTracker[ca][0].isWin = true;
 
       // Update ROI calculation after setting new ATH
-      caTracker[ca][0].roi = ((caTracker[ca].allTimeHigh - initialMarketCap) / initialMarketCap) * 100;
+      const allTimeHighRoi = transformValue(caTracker[ca].allTimeHigh);
+      const initialMarketCapRoi = transformValue(initialMarketCap);
+      const newRoi =
+        ((allTimeHighRoi - initialMarketCapRoi) / initialMarketCapRoi) * 100;
+      caTracker[ca][0].roi = newRoi.toFixed(2);
 
-      console.log(`caTracker[ca].roi for ${tokenSymbol}: ${caTracker[ca][0].roi}%`);
+      console.log(
+        `caTracker[ca].roi for ${tokenSymbol}: ${caTracker[ca][0].roi}%`
+      );
 
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
@@ -487,10 +546,10 @@ async function checkAllTimeHighs() {
       alertChannel.send({ embeds: [embed] });
     } else {
       console.log(
-        `${marketCap} MC did not pass ATH of ${caTracker[ca].allTimeHigh}`
+        `${tokenSymbol} of ${marketCap} MC did not pass ATH of ${caTracker[ca].allTimeHigh}`
       );
     }
-    console.log("-------------------------------")
+    console.log("-------------------------------");
   }
 }
 
@@ -518,7 +577,8 @@ async function checkAndSendAlert(ca) {
       }
       acc[entry.channelId].count++;
       acc[entry.channelId].messages.push(
-        `[Message tracked at <t:${Math.floor(entry.timestamp / 1000)}:T>](${entry.messageLink
+        `[Message tracked at <t:${Math.floor(entry.timestamp / 1000)}:T>](${
+          entry.messageLink
         }) by ${entry.username}`
       );
       return acc;
