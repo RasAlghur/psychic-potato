@@ -1,6 +1,6 @@
 import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
 import dotenv from "dotenv";
-import { Metaplex } from "@metaplex-foundation/js";
+import { Metaplex, token } from "@metaplex-foundation/js";
 import pkg from "@metaplex-foundation/mpl-auction-house";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { ENV, TokenListProvider } from "@solana/spl-token-registry";
@@ -53,9 +53,6 @@ const MONITORED_CHANNEL_IDS = [
 
 const caTracker = {};
 const userCallCounts = {}; // To track the number of calls per user
-const userPerformance = {};
-const tokenState = {}; // To track the last market cap checked for each token
-const processedEntries = new Set();
 
 // Function to calculate user performance based on caTracker
 function calculateUserPerformance(username) {
@@ -63,7 +60,7 @@ function calculateUserPerformance(username) {
   let losses = 0;
 
   for (const ca in caTracker) {
-    caTracker[ca].forEach(entry => {
+    caTracker[ca].forEach((entry) => {
       if (entry.username === username) {
         if (entry.isWin) {
           wins++;
@@ -84,7 +81,9 @@ function getUserPerformance(username) {
   if (wins + losses > 0) {
     const totalCalls = wins + losses;
     const winrate = (wins / totalCalls) * 100;
-    return `User <${username}> has ${wins} wins and ${losses} losses. Winrate: ${winrate.toFixed(2)}%`;
+    return `User ${username} has ${wins} wins and ${losses} losses out of ${totalCalls}. Winrate: ${winrate.toFixed(
+      2
+    )}%`;
   } else {
     return `No performance data available for user <${username}>.`;
   }
@@ -103,6 +102,26 @@ function formatMarketCap(marketCap) {
   } else {
     return null;
   }
+}
+
+function transformValue(value) {
+  if (typeof value === "string" && value.trim() !== "") {
+    const trimmedValue = value.trim();
+    const lastChar = trimmedValue.slice(-1).toUpperCase();
+    const numericPart = parseFloat(trimmedValue.slice(0, -1).replace(",", ""));
+
+    if (["K", "M", "B"].includes(lastChar)) {
+      switch (lastChar) {
+        case "K":
+          return numericPart * 1e3;
+        case "M":
+          return numericPart * 1e6;
+        case "B":
+          return numericPart * 1e9;
+      }
+    }
+  }
+  return null;
 }
 
 function isValidPublicKey(key) {
@@ -231,6 +250,7 @@ async function getTokenMetadata(ca) {
   }
 
   const formattedMarketCap = formatMarketCap(marketCap);
+
   if (!formattedMarketCap) {
     exchangeValue = `[PumpFun](https://pump.fun/${mintAddress})`;
   }
@@ -272,12 +292,116 @@ client.on("messageCreate", async (message) => {
     alertChannel.send(performanceMessage);
   }
 
-  // if (content.startsWith(`!perf@${username_entry}`)) {
-  //   console.log("!performance command received");
-  //   const username = username_entry;
-  //   const performanceMessage = getUserPerformance(username);
-  //   alertChannel.send(performanceMessage);
-  // }
+  if (content.startsWith("!info")) {
+    const users = message.mentions.users;
+
+    if (users.size > 0) {
+      // Create a new embed
+      const embed = new EmbedBuilder()
+        .setTitle("User Information")
+        .setColor("#3498db")
+        .setDescription("Here are the details of the mentioned users:")
+        .setFooter({
+          text: `Requested by ${message.author.username}`,
+          iconURL: message.author.displayAvatarURL(),
+        });
+
+      // Iterate through each mentioned user
+      users.forEach((user) => {
+        const username = user.username;
+        console.log(`!info command received from ${username}`);
+        const performanceMessage = getUserPerformance(username);
+
+        // Add user info to embed
+        embed.addFields({
+          name: `${user.username}`,
+          value: performanceMessage,
+          inline: false,
+        });
+
+        // Collect all token symbols and ROIs for the user
+        let roiDetails = [];
+        let callDetails = [];
+        let groupDetails = new Set(); // Using a Set to avoid duplicate channels
+
+        for (const ca in caTracker) {
+          if (caTracker[ca][0].username === username) {
+            const tokenSymbol = caTracker[ca][0].tokenSymbol || "Unknown";
+            const roi = caTracker[ca][0].roi !== null ? parseFloat(caTracker[ca][0].roi) : "0";
+            const timestamp = caTracker[ca][0].timestamp;
+            const channelId = caTracker[ca][0].channelId;
+
+            // Only push if ROI is a number
+            // if (roi !== "N/A") {
+            roiDetails.push({ tokenSymbol, roi });
+
+            // Add tokenSymbol and timestamp to callDetails
+            callDetails.push({ tokenSymbol, roi, timestamp });
+
+            // Collect unique channel IDs
+            groupDetails.add(channelId);
+            // }
+          }
+        }
+
+        // Sort roiDetails by ROI in descending order
+        roiDetails.sort((a, b) => b.roi - a.roi);
+
+        // Sort callDetails by timestamp in descending order
+        callDetails.sort((a, b) => b.timestamp - a.timestamp);
+
+        // Keep only the last 3 calls
+        const lastThreeCalls = callDetails.slice(0, 3);
+
+        // Format the last three call details into strings
+        const formattedCallDetails = lastThreeCalls.map(
+          ({ tokenSymbol, roi }, index) => `${index + 1}. ${tokenSymbol} \`${roi}%\``
+        );
+
+        // Format the sorted ROI details into strings
+        const formattedRoiDetails = roiDetails.map(
+          ({ tokenSymbol, roi }, index) => `${index + 1}. ${tokenSymbol} \`${roi}%\``
+        );
+
+        const formattedGroupDetails = [...groupDetails].map(channelId => {
+          const channel = client.channels.cache.get(channelId);
+          return channel ? `• ${channel.name} (${channelId})` : `• Unknown Channel (${channelId})`;
+        }).join("\n");
+
+        // Add the list of token symbols and ROIs to the embed
+        if (formattedRoiDetails.length > 0) {
+          embed.addFields({
+            name: "Tokens Called and ROIs (Highest to Lowest)",
+            value: formattedRoiDetails.join("\n"),
+            inline: false,
+          });
+        }
+
+        // Add the list of calls by timestamp to the embed
+        if (formattedCallDetails.length > 0) {
+          embed.addFields({
+            name: "(Most Recent Calls)",
+            value: formattedCallDetails.join("\n"),
+            inline: false,
+          });
+        }
+
+        // Add the list of groups where addresses were posted
+        if (formattedGroupDetails) {
+          embed.addFields({
+            name: "Groups Where Addresses Were Posted",
+            value: formattedGroupDetails,
+            inline: false,
+          });
+        }
+      });
+
+      // Send the embed to the alert channel
+      alertChannel.send({ embeds: [embed] });
+    } else {
+      message.channel.send("No users mentioned.");
+    }
+  }
 
   const matches = content.match(regex);
   if (matches) {
@@ -306,6 +430,8 @@ client.on("messageCreate", async (message) => {
           userId: message.author.id, // Store the user ID for future use
           isWin: false, // Initialize isWin to false
           roi: null,
+          tokenName: null,
+          tokenSymbol: null,
         },
       ];
       // Continue with alerting or any other logic
@@ -313,105 +439,6 @@ client.on("messageCreate", async (message) => {
     });
   }
 });
-
-// async function checkAllTimeHighs() {
-//   const alertChannel = client.channels.cache.get(ALERT_CHANNEL_ID);
-
-//   if (!alertChannel) {
-//     console.error(`Alert channel with ID ${ALERT_CHANNEL_ID} not found.`);
-//     return;
-//   }
-
-//   Object.keys(caTracker).forEach(async (ca) => {
-//     // console.log("the ca tracker", caTracker);
-//     console.log(caTracker);
-//     const { marketCap, tokenSymbol } = await getTokenMetadata(ca);
-
-//     const isIncomplete = marketCap == null;
-
-//     if (isIncomplete) {
-//       console.log(`Incomplete MC data for token ${ca}: ATH is ${marketCap}`);
-//       delete caTracker[ca];
-//       // continue; // Skip to the next iteration
-//     }
-
-//     const username = caTracker[ca][0].username;
-//     const userId = caTracker[ca][0].userId; // Retrieve the user ID from caTracker
-//     const usernameMention = `<@${userId}>`;
-//     const usernameCheck = caTracker[ca].username;
-//     console.log("usernameCheck", usernameCheck)
-
-//     // Retrieve the number of calls made by this user
-//     const totalCallsByUser = userCallCounts[username] || 0;
-
-//     // Store the market cap at the time of the call if it doesn't exist
-//     if (!caTracker[ca].initialMarketCap) {
-//       caTracker[ca].initialMarketCap = marketCap;
-//     }
-
-//     // Initialize allTimeHigh with the initial market cap if not already set
-//     if (!caTracker[ca].allTimeHigh) {
-//       caTracker[ca].allTimeHigh = caTracker[ca].initialMarketCap;
-//     }
-
-//     const initialMarketCap = caTracker[ca].initialMarketCap;
-
-//     if(!caTracker[ca].roi) {
-//       // ((ATH - initialMC) / initalMC) * 100
-//       caTracker[ca].roi = ((caTracker[ca].allTimeHigh - caTracker[ca].initialMarketCap) / caTracker[ca].initialMarketCap) * 100;
-//     }
-
-//     console.log(`caTracker[ca].roi for ${tokenSymbol}: ${caTracker[ca].roi}%`);
-//     console.log(`${tokenSymbol} ${caTracker[ca].allTimeHigh}`);
-
-//     // Update ATH before checking if new ATH is reached
-//     // updateATH(ca, username);
-
-//     if (
-//       marketCap > caTracker[ca].allTimeHigh &&
-//       marketCap > initialMarketCap
-//     ) {
-//       caTracker[ca].allTimeHigh = marketCap;
-//       console.log(
-//         `${marketCap} MC did pass ATH of ${caTracker[ca].allTimeHigh}`
-//       );
-
-//       caTracker[ca][0].isWin = true;
-//       const embed = new EmbedBuilder()
-//         .setColor(0xff0000)
-//         .setTitle(
-//           `${tokenSymbol} just reached a marketCap of ${marketCap}, new all-time high!`
-//         )
-//         .setThumbnail(BOT_IMAGE_URL)
-//         .addFields(
-//           {
-//             name: "Caller Profile",
-//             value: `${username} (Total Calls: ${totalCallsByUser})`,
-//             inline: true,
-//           },
-//           {
-//             name: "Called at",
-//             value: initialMarketCap.toString() || "NA",
-//             inline: true,
-//           },
-//           {
-//             name: "ATH MCAP",
-//             value: caTracker[ca].allTimeHigh.toString() || "NA",
-//             inline: true,
-//           }
-//         )
-//         .setTimestamp();
-
-//       alertChannel.send({ embeds: [embed] });
-//     } else {
-//       console.log(
-//         `${marketCap} MC did not pass ATH of ${caTracker[ca].allTimeHigh}`
-//       );
-//     }
-//     console.log("-------------------------------")
-//   });
-//   return;
-// }
 
 async function checkAllTimeHighs() {
   const alertChannel = client.channels.cache.get(ALERT_CHANNEL_ID);
@@ -422,7 +449,7 @@ async function checkAllTimeHighs() {
   }
 
   for (const ca of Object.keys(caTracker)) {
-    const { marketCap, tokenSymbol } = await getTokenMetadata(ca);
+    const { marketCap } = await getTokenMetadata(ca);
 
     if (marketCap == null) {
       console.log(`Incomplete MC data for token ${ca}: ATH is ${marketCap}`);
@@ -433,6 +460,7 @@ async function checkAllTimeHighs() {
     const username = caTracker[ca][0].username;
     const userId = caTracker[ca][0].userId; // Retrieve the user ID from caTracker
     const usernameMention = `<@${userId}>`;
+    const tokenSymbol = caTracker[ca][0].tokenSymbol
 
     // Retrieve the number of calls made by this user
     const totalCallsByUser = userCallCounts[username] || 0;
@@ -455,9 +483,15 @@ async function checkAllTimeHighs() {
       caTracker[ca][0].isWin = true;
 
       // Update ROI calculation after setting new ATH
-      caTracker[ca][0].roi = ((caTracker[ca].allTimeHigh - initialMarketCap) / initialMarketCap) * 100;
+      const allTimeHighRoi = transformValue(caTracker[ca].allTimeHigh);
+      const initialMarketCapRoi = transformValue(initialMarketCap);
+      const newRoi =
+        ((allTimeHighRoi - initialMarketCapRoi) / initialMarketCapRoi) * 100;
+      caTracker[ca][0].roi = newRoi.toFixed(2);
 
-      console.log(`caTracker[ca].roi for ${tokenSymbol}: ${caTracker[ca][0].roi}%`);
+      console.log(
+        `caTracker[ca].roi for ${tokenSymbol}: ${caTracker[ca][0].roi}%`
+      );
 
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
@@ -487,10 +521,10 @@ async function checkAllTimeHighs() {
       alertChannel.send({ embeds: [embed] });
     } else {
       console.log(
-        `${marketCap} MC did not pass ATH of ${caTracker[ca].allTimeHigh}`
+        `${tokenSymbol} of ${marketCap} MC did not pass ATH of ${caTracker[ca].allTimeHigh}`
       );
     }
-    console.log("-------------------------------")
+    console.log("-------------------------------");
   }
 }
 
@@ -506,6 +540,9 @@ async function checkAndSendAlert(ca) {
     await getTokenMetadata(ca);
 
   const isIncomplete = !tokenName || !tokenSymbol || marketCap == null;
+
+  caTracker[ca][0].tokenName = tokenName
+  caTracker[ca][0].tokenSymbol = tokenSymbol
 
   if (isIncomplete) {
     console.log(`Incomplete data for token ${ca}: marketCap is ${marketCap}`);
@@ -535,13 +572,6 @@ async function checkAndSendAlert(ca) {
     userCallCounts[username] += 1;
 
     console.log(`${username} has made ${userCallCounts[username]} token calls`);
-
-    // if (!userCallCounts[message.author.id]) {
-    //     userCallCounts[message.author.id] = 0;
-    // }
-    // userCallCounts[message.author.id] += 1;
-
-    // console.log(`${message.author.username} has made ${userCallCounts[message.author.id]} token calls`);
 
     // Retrieve the number of calls made by this user
     const totalCallsByUser = userCallCounts[username] || 0;
