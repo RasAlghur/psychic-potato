@@ -17,6 +17,7 @@
     "@solana/spl-token-registry": "^0.2.4574",
     "@solana/web3.js": "^1.95.3",
     "discord.js": "^14.15.3",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "redis": "^4.7.0"
   }
 }

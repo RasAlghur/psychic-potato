@@ -4,9 +4,15 @@ import { Metaplex, token } from "@metaplex-foundation/js";
 import pkg from "@metaplex-foundation/mpl-auction-house";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { ENV, TokenListProvider } from "@solana/spl-token-registry";
+import { redisConnection } from "./connection.js";
+
 dotenv.config();
 
 const { AuthorityScope } = pkg;
+
+const connectToRedis = async () => await redisConnection();
+
+const connect = connectToRedis();
 
 const client = new Client({
   intents: [
@@ -15,6 +21,8 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
 });
+
+// await redisClient.set("key", "value");
 
 // Periodically check for all-time high every 60 seconds
 const CHECK_INTERVAL = 60000; // 30 secs
@@ -167,6 +175,32 @@ async function getTokenSupply(connection, mintAddress) {
   return null;
 }
 
+function getEmojiForWinRate(winRate) {
+  if (winRate >= 80) {
+    return "🏆"; // Trophy emoji for very high win rates
+  } else if (winRate >= 60) {
+    return "🥇"; // Gold medal emoji for high win rates
+  } else if (winRate >= 40) {
+    return "🥈"; // Silver medal emoji for medium win rates
+  } else if (winRate >= 20) {
+    return "🥉"; // Bronze medal emoji for lower win rates
+  } else {
+    return "❌"; // Cross emoji for very low win rates
+  }
+}
+
+function getEmojiForRoi(roi) {
+  if (roi >= 50) {
+    return "🚀"; // Rocket emoji for very high ROI
+  } else if (roi >= 20) {
+    return "📈"; // Chart emoji for good ROI
+  } else if (roi >= 0) {
+    return "📊"; // Bar chart emoji for positive ROI
+  } else {
+    return "📉"; // Downward trend emoji for negative ROI
+  }
+}
+
 async function getTokenMetadata(ca) {
   console.log("Fetching token metadata...");
   const connection = new Connection(
@@ -287,22 +321,114 @@ client.on("messageCreate", async (message) => {
 
   if (content.startsWith("!perf")) {
     console.log("!performance command received");
+
     const embed = new EmbedBuilder()
       .setTitle("User Information")
       .setColor("#3498db")
-      .setDescription("Here are your details")
+      .setDescription("Here are your details:")
       .setFooter({
         text: `Requested by ${message.author.username}`,
         iconURL: message.author.displayAvatarURL(),
       });
 
     const username = message.author.username;
-    const performanceMessage = getUserPerformance(username);
+    let roiDetails = [];
+    let callDetails = [];
+    let groupDetails = new Set(); // Using a Set to avoid duplicate channels
+    let totalRoiSum = 0; // To sum up all ROIs
+    let totalRoiCount = 0; // To count all valid ROIs
+    let wins = 0;
+    let losses = 0;
 
-    embed.addFields({
-      name: username,
-      value: performanceMessage,
-    });
+    for (const ca in caTracker) {
+      if (caTracker[ca][0].username === username) {
+        const tokenSymbol = caTracker[ca][0].tokenSymbol || "Unknown";
+        const roi =
+          caTracker[ca][0].roi !== null ? parseFloat(caTracker[ca][0].roi) : 0;
+        const timestamp = caTracker[ca][0].timestamp;
+        const channelId = caTracker[ca][0].channelId;
+        const isWin = caTracker[ca][0].isWin;
+
+        if (isWin) wins++;
+        else losses++;
+
+        // Only push if ROI is a number
+        roiDetails.push({ tokenSymbol, roi });
+        totalRoiSum += roi; // Add ROI to total sum
+        totalRoiCount++; // Increment count of valid ROIs
+
+        // Add tokenSymbol and timestamp to callDetails
+        callDetails.push({ tokenSymbol, roi, timestamp });
+
+        // Collect unique channel IDs
+        groupDetails.add(channelId);
+      }
+    }
+
+    // Calculate average ROI if there are any valid ROIs
+    const averageRoi =
+      totalRoiCount > 0 ? (totalRoiSum / totalRoiCount).toFixed(2) : "0";
+    // Calculate win rate
+    const winRate =
+      wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(2) : "0";
+
+    // Format the call details and group details
+    callDetails.sort((a, b) => b.timestamp - a.timestamp);
+    const lastThreeCalls = callDetails.slice(0, 3);
+
+    // Format the last three call details into strings
+    const formattedCallDetails = lastThreeCalls.map(
+      ({ tokenSymbol, roi }, index) =>
+        `${index + 1}. ${tokenSymbol} \`${roi}%\``
+    );
+
+    // Sort roiDetails by ROI in descending order and format into strings
+    roiDetails.sort((a, b) => b.roi - a.roi);
+    const formattedRoiDetails = roiDetails.map(
+      ({ tokenSymbol, roi }, index) =>
+        `${index + 1}. ${tokenSymbol} \`${roi}%\``
+    );
+
+    const formattedGroupDetails = [...groupDetails]
+      .map((channelId) => {
+        const channel = client.channels.cache.get(channelId);
+        return channel
+          ? `• ${channel.name} (${channelId})`
+          : `• Unknown Channel (${channelId})`;
+      })
+      .join("\n");
+
+    // Add user performance summary to embed
+    embed.addFields(
+      {
+        name: `**${username}**`,
+        value:
+          `Winrate: \`${winRate}%\` ${getEmojiForWinRate(
+            winRate
+          )} | Avg ROI: \`${averageRoi}%\` ${getEmojiForRoi(averageRoi)}\n` +
+          `Wins: \`${wins}\` | Losses: \`${losses}\` | Total Calls: \`${
+            wins + losses
+          }\``,
+        inline: false,
+      },
+      {
+        name: "**Tokens Called and ROIs**",
+        value: formattedRoiDetails.join("\n") || "None",
+        inline: true,
+      },
+      {
+        name: "**Most Recent Calls**",
+        value: formattedCallDetails.join("\n") || "None",
+        inline: true,
+      },
+      {
+        name: "**Groups**",
+        value: formattedGroupDetails || "None",
+        inline: true,
+      }
+    );
+
+    // Send the embed to the alert channel
     alertChannel.send({ embeds: [embed] });
   }
 
@@ -324,14 +450,6 @@ client.on("messageCreate", async (message) => {
       users.forEach((user) => {
         const username = user.username;
         console.log(`!info command received from ${username}`);
-        const performanceMessage = getUserPerformance(username);
-
-        // Add user info to embed
-        embed.addFields({
-          name: `${user.username}`,
-          value: performanceMessage,
-          inline: false,
-        });
 
         // Collect all token symbols and ROIs for the user
         let roiDetails = [];
@@ -339,6 +457,8 @@ client.on("messageCreate", async (message) => {
         let groupDetails = new Set(); // Using a Set to avoid duplicate channels
         let totalRoiSum = 0; // To sum up all ROIs
         let totalRoiCount = 0; // To count all valid ROIs
+        let wins = 0;
+        let losses = 0;
 
         for (const ca in caTracker) {
           if (caTracker[ca][0].username === username) {
@@ -346,12 +466,15 @@ client.on("messageCreate", async (message) => {
             const roi =
               caTracker[ca][0].roi !== null
                 ? parseFloat(caTracker[ca][0].roi)
-                : "0";
+                : 0;
             const timestamp = caTracker[ca][0].timestamp;
             const channelId = caTracker[ca][0].channelId;
+            const isWin = caTracker[ca][0].isWin;
+
+            if (isWin) wins++;
+            else losses++;
 
             // Only push if ROI is a number
-            // if (roi !== "N/A") {
             roiDetails.push({ tokenSymbol, roi });
             totalRoiSum += roi; // Add ROI to total sum
             totalRoiCount++; // Increment count of valid ROIs
@@ -361,21 +484,18 @@ client.on("messageCreate", async (message) => {
 
             // Collect unique channel IDs
             groupDetails.add(channelId);
-            // }
           }
         }
 
-        // Sort roiDetails by ROI in descending order
-        roiDetails.sort((a, b) => b.roi - a.roi);
-
         // Calculate average ROI if there are any valid ROIs
         const averageRoi =
-          totalRoiCount > 0 ? (totalRoiSum / totalRoiCount).toFixed(2) : "N/A";
+          totalRoiCount > 0 ? (totalRoiSum / totalRoiCount).toFixed(2) : "0";
+        // Calculate win rate
+        const winRate =
+          wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(2) : "0";
 
-        // Sort callDetails by timestamp in descending order
+        // Format the call details and group details
         callDetails.sort((a, b) => b.timestamp - a.timestamp);
-
-        // Keep only the last 3 calls
         const lastThreeCalls = callDetails.slice(0, 3);
 
         // Format the last three call details into strings
@@ -384,7 +504,8 @@ client.on("messageCreate", async (message) => {
             `${index + 1}. ${tokenSymbol} \`${roi}%\``
         );
 
-        // Format the sorted ROI details into strings
+        // Sort roiDetails by ROI in descending order and format into strings
+        roiDetails.sort((a, b) => b.roi - a.roi);
         const formattedRoiDetails = roiDetails.map(
           ({ tokenSymbol, roi }, index) =>
             `${index + 1}. ${tokenSymbol} \`${roi}%\``
@@ -399,41 +520,37 @@ client.on("messageCreate", async (message) => {
           })
           .join("\n");
 
-        // Add the average ROI to the embed
-        if (averageRoi !== "N/A") {
-          embed.addFields({
-            name: "Average ROI",
-            value: `${averageRoi}%`,
+        // Add user performance summary to embed
+        embed.addFields(
+          {
+            name: `**${username}**`,
+            value:
+              `Winrate: \`${winRate}%\` ${getEmojiForWinRate(
+                winRate
+              )} | Avg ROI: \`${averageRoi}%\` ${getEmojiForRoi(
+                averageRoi
+              )}\n` +
+              `Wins: \`${wins}\` | Losses: \`${losses}\` | Total Calls: \`${
+                wins + losses
+              }\``,
             inline: false,
-          });
-        }
-
-        // Add the list of token symbols and ROIs to the embed
-        if (formattedRoiDetails.length > 0) {
-          embed.addFields({
-            name: "Tokens Called and ROIs (Highest to Lowest)",
-            value: formattedRoiDetails.join("\n"),
-            inline: false,
-          });
-        }
-
-        // Add the list of calls by timestamp to the embed
-        if (formattedCallDetails.length > 0) {
-          embed.addFields({
-            name: "(Most Recent Calls)",
-            value: formattedCallDetails.join("\n"),
-            inline: false,
-          });
-        }
-
-        // Add the list of groups where addresses were posted
-        if (formattedGroupDetails) {
-          embed.addFields({
-            name: "Groups Where Addresses Were Posted",
-            value: formattedGroupDetails,
-            inline: false,
-          });
-        }
+          },
+          {
+            name: "**Tokens Called and ROIs**",
+            value: formattedRoiDetails.join("\n") || "None",
+            inline: true,
+          },
+          {
+            name: "**Most Recent Calls**",
+            value: formattedCallDetails.join("\n") || "None",
+            inline: true,
+          },
+          {
+            name: "**Groups**",
+            value: formattedGroupDetails || "None",
+            inline: true,
+          }
+        );
       });
 
       // Send the embed to the alert channel
@@ -446,7 +563,7 @@ client.on("messageCreate", async (message) => {
   if (content.startsWith("!top")) {
     // Create a new embed
     const embed = new EmbedBuilder()
-      .setTitle("Top User Information")
+      .setTitle("User Information")
       .setColor("#3498db")
       .setDescription(
         "Here are the details of all users in caTracker, ranked by win rate:"
@@ -456,106 +573,108 @@ client.on("messageCreate", async (message) => {
         iconURL: message.author.displayAvatarURL(),
       });
 
-    // Create an array to store users' data
-    const userData = [];
+    // Extract and sort users by win rate
+    const userPerformance = {};
 
-    // Extract all unique usernames from caTracker and gather their data
     for (const ca in caTracker) {
-      const userEntry = caTracker[ca][0];
-      const username = userEntry.username;
-      const existingUser = userData.find((user) => user.username === username);
-
-      if (existingUser) {
-        // Update existing user data
-        existingUser.calls.push(userEntry);
-        if (userEntry.isWin) existingUser.winCount++;
-      } else {
-        // Add new user data
-        userData.push({
-          username,
-          calls: [userEntry],
-          winCount: userEntry.isWin ? 1 : 0,
-        });
+      const username = caTracker[ca][0].username;
+      if (!userPerformance[username]) {
+        userPerformance[username] = {
+          wins: 0,
+          losses: 0,
+          roiSum: 0,
+          roiCount: 0,
+          callDetails: [],
+          roiDetails: [],
+          groupDetails: new Set(),
+        };
       }
+
+      const entry = caTracker[ca][0];
+      if (entry.isWin) userPerformance[username].wins++;
+      else userPerformance[username].losses++;
+
+      if (entry.roi !== null) {
+        userPerformance[username].roiSum += parseFloat(entry.roi);
+        userPerformance[username].roiCount++;
+      }
+
+      userPerformance[username].callDetails.push({
+        tokenSymbol: entry.tokenSymbol || "Unknown",
+        roi: entry.roi || "0",
+        timestamp: entry.timestamp,
+      });
+
+      userPerformance[username].roiDetails.push({
+        tokenSymbol: entry.tokenSymbol || "Unknown",
+        roi: entry.roi || "0",
+        timestamp: entry.timestamp,
+      });
+
+      userPerformance[username].groupDetails.add(entry.channelId);
     }
 
-    // Calculate win rate for each user and sort by win rate in descending order
-    userData.forEach((user) => {
-      user.totalCalls = user.calls.length;
-      user.winRate = ((user.winCount / user.totalCalls) * 100).toFixed(2);
+    // Convert userPerformance object to an array and sort by win rate
+    const sortedUsers = Object.entries(userPerformance).sort(([, a], [, b]) => {
+      const winRateA =
+        a.wins + a.losses > 0 ? (a.wins / (a.wins + a.losses)) * 100 : 0;
+      const winRateB =
+        b.wins + b.losses > 0 ? (b.wins / (b.wins + b.losses)) * 100 : 0;
+      return winRateB - winRateA;
     });
 
-    // Sort users by win rate (highest to lowest)
-    userData.sort((a, b) => b.winRate - a.winRate);
+    sortedUsers.forEach(([username, data], index) => {
+      const winRate =
+        data.wins + data.losses > 0
+          ? ((data.wins / (data.wins + data.losses)) * 100).toFixed(2)
+          : 0;
+      const avgRoi =
+        data.roiCount > 0 ? (data.roiSum / data.roiCount).toFixed(2) : "0";
 
-    // Iterate through sorted user data
-    userData.forEach((user) => {
-      let roiDetails = [];
-      let callDetails = [];
-      let groupDetails = new Set();
-      let totalRoiSum = 0;
-      let totalRoiCount = 0;
+      // Format the call details and group details
+      data.callDetails.sort((a, b) => b.timestamp - a.timestamp);
+      data.roiDetails.sort((a, b) => b.roi - a.roi);
 
-      user.calls.forEach((call) => {
-        const { tokenSymbol = "Unknown", roi, timestamp, channelId } = call;
-        const parsedRoi = roi !== null ? parseFloat(roi) : 0;
+      const formattedRoiDetails = data.roiDetails.map(
+        ({ tokenSymbol, roi }) => `${tokenSymbol} \`${roi}%\``
+      );
+      const formattedCallDetails = data.callDetails
+        .slice(0, 3)
+        .map(({ tokenSymbol, roi }) => `${tokenSymbol} \`${roi}%\``);
 
-        // Collect all token symbols and ROIs for the user
-        roiDetails.push({ tokenSymbol, roi: parsedRoi });
-        totalRoiSum += parsedRoi;
-        totalRoiCount++;
-
-        // Add tokenSymbol and timestamp to callDetails
-        callDetails.push({ tokenSymbol, roi: parsedRoi, timestamp });
-
-        // Collect unique channel IDs
-        groupDetails.add(channelId);
+      const formattedGroupDetails = [...data.groupDetails].map((channelId) => {
+        const channel = client.channels.cache.get(channelId);
+        return channel ? channel.name : `Unknown Channel (${channelId})`;
       });
 
-      // Sort roiDetails by ROI in descending order
-      roiDetails.sort((a, b) => b.roi - a.roi);
-
-      // Calculate average ROI if there are any valid ROIs
-      const averageRoi =
-        totalRoiCount > 0 ? (totalRoiSum / totalRoiCount).toFixed(2) : "N/A";
-
-      // Sort callDetails by timestamp in descending order
-      callDetails.sort((a, b) => b.timestamp - a.timestamp);
-
-      // Keep only the last 3 calls
-      const lastThreeCalls = callDetails.slice(0, 3);
-
-      // Format the last three call details into strings
-      const formattedCallDetails = lastThreeCalls.map(
-        ({ tokenSymbol, roi }, index) =>
-          `${index + 1}. ${tokenSymbol} \`${roi}%\``
+      // Add fields to embed in rows with bold headers
+      embed.addFields(
+        {
+          name: `**#${index + 1}. ${username}**`,
+          value: `Winrate: \`${winRate}%\` ${getEmojiForWinRate(
+            winRate
+          )} | Avg ROI: \`${avgRoi}%\` ${getEmojiForRoi(avgRoi)}
+          Wins: \`${data.wins}\` | Losses: \`${
+            data.losses
+          }\` | Total Calls: \`${data.wins + data.losses}\``,
+          inline: false,
+        },
+        {
+          name: "**Tokens Called and ROIs:**",
+          value: formattedRoiDetails.join("\n") || "None",
+          inline: true,
+        },
+        {
+          name: "**Most Recent Calls:**",
+          value: formattedCallDetails.join("\n") || "None",
+          inline: true,
+        },
+        {
+          name: "**Groups:**",
+          value: formattedGroupDetails.join("\n") || "None",
+          inline: true,
+        }
       );
-
-      // Format the sorted ROI details into strings
-      const formattedRoiDetails = roiDetails.map(
-        ({ tokenSymbol, roi }, index) =>
-          `${index + 1}. ${tokenSymbol} \`${roi}%\``
-      );
-
-      const formattedGroupDetails = [...groupDetails]
-        .map((channelId) => {
-          const channel = client.channels.cache.get(channelId);
-          return channel
-            ? `• ${channel.name} (${channelId})`
-            : `• Unknown Channel (${channelId})`;
-        })
-        .join("\n");
-
-      // Add user info to embed
-      embed.addFields({
-        name: `${user.username} (Win Rate: ${user.winRate}%)`,
-        value: `Average ROI: ${averageRoi}%\nTokens Called and ROIs: ${formattedRoiDetails.join(
-          ", "
-        )}\nMost Recent Calls: ${formattedCallDetails.join(
-          ", "
-        )}\nGroups: ${formattedGroupDetails}`,
-        inline: false,
-      });
     });
 
     // Send the embed to the alert channel
