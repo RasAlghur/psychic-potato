@@ -1,0 +1,156 @@
+// if (content.startsWith("!info")) {
+//   const users = message.mentions.users;
+
+//   if (users.size > 0) {
+//     // Create a new embed
+//     const embed = new EmbedBuilder()
+//       .setTitle("User Information")
+//       .setColor("#3498db")
+//       .setDescription("Here are the details of the mentioned users:")
+//       .setFooter({
+//         text: `Requested by ${message.author.username}`,
+//         iconURL: message.author.displayAvatarURL(),
+//       });
+
+//     // Iterate through each mentioned user
+//     users.forEach((user) => {
+//       const username = user.username;
+//       console.log(`!info command received from ${username}`);
+//       const performanceMessage = getUserPerformance(username);
+
+//       // Add user info to embed
+//       embed.addFields({
+//         name: `${user.username}`,
+//         value: performanceMessage,
+//         inline: false,
+//       });
+
+//       // Collect all token symbols and ROIs for the user
+//       let roiDetails = [];
+//       let callDetails = [];
+//       let groupDetails = new Set(); // Using a Set to avoid duplicate channels
+//       let totalRoiSum = 0; // To sum up all ROIs
+//       let totalRoiCount = 0; // To count all valid ROIs
+
+//       for (const ca in caTracker) {
+//         if (caTracker[ca][0].username === username) {
+//           const tokenSymbol = caTracker[ca][0].tokenSymbol || "Unknown";
+//           const roi =
+//             caTracker[ca][0].roi !== null
+//               ? parseFloat(caTracker[ca][0].roi)
+//               : "0";
+//           const timestamp = caTracker[ca][0].timestamp;
+//           const channelId = caTracker[ca][0].channelId;
+
+//           // Only push if ROI is a number
+//           // if (roi !== "N/A") {
+//           roiDetails.push({ tokenSymbol, roi });
+//           totalRoiSum += roi; // Add ROI to total sum
+//           totalRoiCount++; // Increment count of valid ROIs
+
+//           // Add tokenSymbol and timestamp to callDetails
+//           callDetails.push({ tokenSymbol, roi, timestamp });
+
+//           // Collect unique channel IDs
+//           groupDetails.add(channelId);
+//           // }
+//         }
+//       }
+
+//       // Sort roiDetails by ROI in descending order
+//       roiDetails.sort((a, b) => b.roi - a.roi);
+
+//       // Calculate average ROI if there are any valid ROIs
+//       const averageRoi =
+//         totalRoiCount > 0 ? (totalRoiSum / totalRoiCount).toFixed(2) : "0";
+
+//       // Sort callDetails by timestamp in descending order
+//       callDetails.sort((a, b) => b.timestamp - a.timestamp);
+
+//       // Keep only the last 3 calls
+//       const lastThreeCalls = callDetails.slice(0, 3);
+
+//       // Format the last three call details into strings
+//       const formattedCallDetails = lastThreeCalls.map(
+//         ({ tokenSymbol, roi }, index) =>
+//           `${index + 1}. ${tokenSymbol} \`${roi}%\``
+//       );
+
+//       // Format the sorted ROI details into strings
+//       const formattedRoiDetails = roiDetails.map(
+//         ({ tokenSymbol, roi }, index) =>
+//           `${index + 1}. ${tokenSymbol} \`${roi}%\``
+//       );
+
+//       const formattedGroupDetails = [...groupDetails]
+//         .map((channelId) => {
+//           const channel = client.channels.cache.get(channelId);
+//           return channel
+//             ? `• ${channel.name} (${channelId})`
+//             : `• Unknown Channel (${channelId})`;
+//         })
+//         .join("\n");
+
+//       // Add the average ROI to the embed
+//       if (averageRoi !== "N/A") {
+//         embed.addFields({
+//           name: "Average ROI",
+//           value: `${averageRoi}%`,
+//           inline: false,
+//         });
+//       }
+
+//       // Add the list of token symbols and ROIs to the embed
+//       if (formattedRoiDetails.length > 0) {
+//         embed.addFields({
+//           name: "Tokens Called and ROIs (Highest to Lowest)",
+//           value: formattedRoiDetails.join("\n"),
+//           inline: false,
+//         });
+//       }
+
+//       // Add the list of calls by timestamp to the embed
+//       if (formattedCallDetails.length > 0) {
+//         embed.addFields({
+//           name: "(Most Recent Calls)",
+//           value: formattedCallDetails.join("\n"),
+//           inline: false,
+//         });
+//       }
+
+//       // Add the list of groups where addresses were posted
+//       if (formattedGroupDetails) {
+//         embed.addFields({
+//           name: "Groups Where Addresses Were Posted",
+//           value: formattedGroupDetails,
+//           inline: false,
+//         });
+//       }
+//     });
+//     // Send the embed to the alert channel
+//     alertChannel.send({ embeds: [embed] });
+//   } else {
+//     message.channel.send("No users mentioned.");
+//   }
+// }
+
+// if (content.startsWith("!perf")) {
+//   console.log("!performance command received");
+//   const embed = new EmbedBuilder()
+//     .setTitle("User Information")
+//     .setColor("#3498db")
+//     .setDescription("Here are your details")
+//     .setFooter({
+//       text: `Requested by ${message.author.username}`,
+//       iconURL: message.author.displayAvatarURL(),
+//     });
+
+//   const username = message.author.username;
+//   const performanceMessage = getUserPerformance(username);
+
+//   embed.addFields({
+//     name: username,
+//     value: performanceMessage,
+//   });
+//   alertChannel.send({ embeds: [embed] });
+// }
