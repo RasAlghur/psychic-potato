@@ -4,15 +4,11 @@ import { Metaplex, token } from "@metaplex-foundation/js";
 import pkg from "@metaplex-foundation/mpl-auction-house";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { ENV, TokenListProvider } from "@solana/spl-token-registry";
-import { redisConnection } from "./connection.js";
+import fs from 'fs';
 
 dotenv.config();
 
 const { AuthorityScope } = pkg;
-
-const connectToRedis = async () => await redisConnection();
-
-const connect = connectToRedis();
 
 const client = new Client({
   intents: [
@@ -22,10 +18,8 @@ const client = new Client({
   ],
 });
 
-// await redisClient.set("key", "value");
-
 // Periodically check for all-time high every 60 seconds
-const CHECK_INTERVAL = 60000; // 30 secs
+const CHECK_INTERVAL = 60000; // 60 secs
 const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const BOT_IMAGE_URL = process.env.BOT_IMAGE_URL;
 const ALERT_CHANNEL_ID = "1275427179617980426";
@@ -59,43 +53,11 @@ const MONITORED_CHANNEL_IDS = [
   "1268746921074229279",
 ];
 
-const caTracker = {};
+// const caTracker = {};
+// Load the caTracker data from the file
+
+let caTracker = loadCaTrackerFromFile();
 const userCallCounts = {}; // To track the number of calls per user
-
-// Function to calculate user performance based on caTracker
-function calculateUserPerformance(username) {
-  let wins = 0;
-  let losses = 0;
-
-  for (const ca in caTracker) {
-    caTracker[ca].forEach((entry) => {
-      if (entry.username === username) {
-        if (entry.isWin) {
-          wins++;
-        } else {
-          losses++;
-        }
-      }
-    });
-  }
-
-  return { wins, losses };
-}
-
-// Function to get user performance
-function getUserPerformance(username) {
-  const { wins, losses } = calculateUserPerformance(username);
-
-  if (wins + losses > 0) {
-    const totalCalls = wins + losses;
-    const winrate = (wins / totalCalls) * 100;
-    return `User ${username} has ${wins} wins and ${losses} losses out of ${totalCalls}. Winrate: ${winrate.toFixed(
-      2
-    )}%`;
-  } else {
-    return `No performance data available for user <${username}>.`;
-  }
-}
 
 // Helper function to format market cap
 function formatMarketCap(marketCap) {
@@ -141,27 +103,37 @@ function isValidPublicKey(key) {
   }
 }
 
-async function getTokenPrice(mintAddress) {
-  try {
-    const response = await fetch(
-      `https://api-v3.raydium.io/mint/price?mints=${mintAddress}`,
-      { timeout: 10000 }
-    ); // 10 seconds timeout
-    const responseData = await response.json();
+async function getTokenPrice(mintAddress, retries = 3, delay = 2000) {
+  let attempt = 0;
 
-    if (responseData.success && responseData.data) {
-      const tokenPrice = responseData.data[mintAddress];
-      return tokenPrice ? parseFloat(tokenPrice) : null;
+  while (attempt < retries) {
+    try {
+      const response = await fetch(
+        `https://api-v3.raydium.io/mint/price?mints=${mintAddress}`,
+        { timeout: 10000 }
+      ); // 10 seconds timeout
+      const responseData = await response.json();
+
+      if (responseData.success && responseData.data) {
+        const tokenPrice = responseData.data[mintAddress];
+        return tokenPrice ? parseFloat(tokenPrice) : null;
+      }
+    } catch (error) {
+      if (error.code === "UND_ERR_CONNECT_TIMEOUT") {
+        console.error(`Connection timed out on attempt ${attempt + 1}. Retrying...`);
+      } else {
+        console.error("Error fetching token price:", error);
+      }
+
+      attempt++;
+
+      if (attempt < retries) {
+        await new Promise(res => setTimeout(res, delay)); // Delay before retrying
+      }
     }
-  } catch (error) {
-    if (error.code === "UND_ERR_CONNECT_TIMEOUT") {
-      console.error("Connection timed out. Please try again later.");
-    } else {
-      console.error("Error fetching token price:", error);
-    }
-    return null;
   }
 
+  console.error(`Failed to fetch token price after ${retries} attempts.`);
   return null;
 }
 
@@ -201,7 +173,7 @@ function getEmojiForRoi(roi) {
   }
 }
 
-async function getTokenMetadata(ca) {
+async function getTokenMetadata(ca, retries = 3, delay = 2000) {
   console.log("Fetching token metadata...");
   const connection = new Connection(
     "https://api.mainnet-beta.solana.com",
@@ -222,52 +194,29 @@ async function getTokenMetadata(ca) {
   let marketCap = "";
   let exchangeValue = `[Raydium](https://raydium.io/swap/?outputMint=${mintAddress}&inputMint=sol)`; // Default exchange value
 
-  try {
-    const metadataAccount = metaplex
-      .nfts()
-      .pdas()
-      .metadata({ mint: mintAddress });
-    const metadataAccountInfo = await connection.getAccountInfo(
-      metadataAccount
-    );
+  let attempt = 0;
 
-    if (metadataAccountInfo) {
-      const token = await metaplex
+  while (attempt < retries) {
+    try {
+      const metadataAccount = metaplex
         .nfts()
-        .findByMint({ mintAddress: mintAddress });
-      tokenName = token.name;
-      tokenSymbol = token.symbol;
-      tokenLogo = token.json?.image;
-      tokenDesc = token.json?.description;
-      tokenX = token.json?.twitter || "❌";
-      tokenTg = token.json?.telegram || "❌";
-      tokenWeb = token.json?.website || "❌";
+        .pdas()
+        .metadata({ mint: mintAddress });
+      const metadataAccountInfo = await connection.getAccountInfo(
+        metadataAccount
+      );
 
-      const tokenPrice = await getTokenPrice(mintAddress.toBase58());
-      const tokenSupply = await getTokenSupply(connection, mintAddress);
-
-      if (tokenPrice !== null && tokenSupply !== null) {
-        marketCap = tokenPrice * tokenSupply;
-      } else {
-        console.error("Token Price or Supply: Not available");
-      }
-    } else {
-      const provider = await new TokenListProvider().resolve();
-      const tokenList = provider.filterByChainId(ENV.MainnetBeta).getList();
-      const tokenMap = tokenList.reduce((map, item) => {
-        map.set(item.address, item);
-        return map;
-      }, new Map());
-
-      const token = tokenMap.get(mintAddress.toBase58());
-      if (token) {
+      if (metadataAccountInfo) {
+        const token = await metaplex
+          .nfts()
+          .findByMint({ mintAddress: mintAddress });
         tokenName = token.name;
         tokenSymbol = token.symbol;
-        tokenLogo = token.logoURI;
-        tokenDesc = token.description || "No description available";
-        tokenX = token.twitter || "❌";
-        tokenTg = token.telegram || "❌";
-        tokenWeb = token.website || "❌";
+        tokenLogo = token.json?.image;
+        tokenDesc = token.json?.description;
+        tokenX = token.json?.twitter || "❌";
+        tokenTg = token.json?.telegram || "❌";
+        tokenWeb = token.json?.website || "❌";
 
         const tokenPrice = await getTokenPrice(mintAddress.toBase58());
         const tokenSupply = await getTokenSupply(connection, mintAddress);
@@ -277,10 +226,23 @@ async function getTokenMetadata(ca) {
         } else {
           console.error("Token Price or Supply: Not available");
         }
+        break; // Break the loop if successful
+      } else {
+        console.warn(`Metadata is null on attempt ${attempt + 1}. Retrying...`);
       }
+    } catch (error) {
+      console.error(`Error fetching token metadata on attempt ${attempt + 1}:`, error);
     }
-  } catch (error) {
-    console.error("Error fetching token metadata:", error);
+
+    attempt++;
+
+    if (attempt < retries) {
+      await new Promise(res => setTimeout(res, delay)); // Delay before retrying
+    }
+  }
+
+  if (attempt === retries) {
+    console.error(`Failed to fetch token metadata after ${retries} attempts.`);
   }
 
   const formattedMarketCap = formatMarketCap(marketCap);
@@ -301,6 +263,196 @@ async function getTokenMetadata(ca) {
     marketCap: formattedMarketCap,
     exchangeValue,
   };
+}
+
+async function checkAllTimeHighs() {
+  const alertChannel = client.channels.cache.get(ALERT_CHANNEL_ID);
+
+  if (!alertChannel) {
+    console.error(`Alert channel with ID ${ALERT_CHANNEL_ID} not found.`);
+    return;
+  }
+
+  for (const ca of Object.keys(caTracker)) {
+    const { marketCap } = await getTokenMetadata(ca);
+
+    if (marketCap == null) {
+      console.log(`Incomplete MC data for token ${ca}: ATH is ${marketCap}`);
+      delete caTracker[ca];
+      continue; // Skip to the next iteration
+    }
+
+    const username = caTracker[ca][0].username;
+    const userId = caTracker[ca][0].userId; // Retrieve the user ID from caTracker
+    const usernameMention = `<@${userId}>`;
+    const tokenSymbol = caTracker[ca][0].tokenSymbol;
+
+    // Store the market cap at the time of the call if it doesn't exist
+    if (!caTracker[ca].initialMarketCap) {
+      caTracker[ca].initialMarketCap = marketCap;
+      saveCaTrackerToFile()
+    }
+
+    // Initialize allTimeHigh with the initial market cap if not already set
+    if (!caTracker[ca].allTimeHigh) {
+      caTracker[ca].allTimeHigh = caTracker[ca].initialMarketCap;
+      saveCaTrackerToFile()
+    }
+
+    const initialMarketCap = caTracker[ca].initialMarketCap;
+
+    // Calculate ROI whenever the market cap changes
+    if (marketCap > caTracker[ca].allTimeHigh && marketCap > initialMarketCap) {
+      caTracker[ca].allTimeHigh = marketCap;
+      caTracker[ca][0].isWin = true;
+
+      // Update ROI calculation after setting new ATH
+      const allTimeHighRoi = transformValue(caTracker[ca].allTimeHigh);
+      const initialMarketCapRoi = transformValue(initialMarketCap);
+      const newRoi =
+        ((allTimeHighRoi - initialMarketCapRoi) / initialMarketCapRoi) * 100;
+      caTracker[ca][0].roi = newRoi.toFixed(2);
+
+      //   console.log(
+      //     `caTracker[ca].roi for ${tokenSymbol}: ${caTracker[ca][0].roi}%`
+      //   );
+
+      //   const embed = new EmbedBuilder()
+      //     .setColor(0xff0000)
+      //     .setTitle(
+      //       `${tokenSymbol} just reached a marketCap of ${marketCap}, new all-time high!`
+      //     )
+      //     .setThumbnail(BOT_IMAGE_URL)
+      //     .addFields(
+      //       {
+      //         name: "Caller Profile",
+      //         value: `${usernameMention}`,
+      //         inline: true,
+      //       },
+      //       {
+      //         name: "Called at",
+      //         value: initialMarketCap.toString() || "NA",
+      //         inline: true,
+      //       },
+      //       {
+      //         name: "ATH MCAP",
+      //         value: caTracker[ca].allTimeHigh.toString() || "NA",
+      //         inline: true,
+      //       }
+      //     )
+      //     .setTimestamp();
+
+      //   alertChannel.send({ embeds: [embed] });
+      //   // saveCaTrackerToFile();
+      // } else {
+      //   console.log(
+      //     `${tokenSymbol} of ${marketCap} MC did not pass ATH of ${caTracker[ca].allTimeHigh}`
+      //   );
+    }
+    saveCaTrackerToFile();
+    // console.log("-------------------------------");
+  }
+}
+
+function saveCaTrackerToFile() {
+  try {
+    const data = JSON.stringify(caTracker, null, 2);
+    fs.writeFileSync('caTracker.json', data);
+  } catch (error) {
+    console.error('Error saving caTracker to file:', error);
+  }
+}
+
+function loadCaTrackerFromFile() {
+  try {
+    if (fs.existsSync('caTracker.json')) {
+      const data = fs.readFileSync('caTracker.json');
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error('Error loading caTracker from file:', error);
+  }
+  return {}; // Return an empty object if the file doesn't exist or there's an error
+}
+
+async function checkAndSendAlert(ca) {
+  const alertChannel = client.channels.cache.get(ALERT_CHANNEL_ID);
+
+  if (!alertChannel) {
+    console.error(`Alert channel with ID ${ALERT_CHANNEL_ID} not found.`);
+    return;
+  }
+
+  const { tokenName, tokenSymbol, tokenLogo, marketCap, exchangeValue } =
+    await getTokenMetadata(ca);
+
+  const isIncomplete = !tokenName || !tokenSymbol || marketCap == null;
+
+  caTracker[ca][0].tokenName = tokenName;
+  caTracker[ca][0].tokenSymbol = tokenSymbol;
+
+  if (isIncomplete) {
+    console.log(`Incomplete data for token ${ca}: marketCap is ${marketCap}`);
+    delete caTracker[ca];
+    return; // Exit early if data is incomplete
+  } else {
+    const channelMentions = caTracker[ca].reduce((acc, entry) => {
+      if (!acc[entry.channelId]) {
+        acc[entry.channelId] = { count: 0, messages: [] };
+      }
+      acc[entry.channelId].count++;
+      acc[entry.channelId].messages.push(
+        `[Message tracked at <t:${Math.floor(entry.timestamp / 1000)}:T>](${entry.messageLink
+        }) by ${entry.username}`
+      );
+      return acc;
+    }, {});
+
+    const username = caTracker[ca][0].username;
+    const userId = caTracker[ca][0].userId; // Retrieve the user ID from caTracker
+    const usernameMention = `<@${userId}>`;
+
+    // Increment the user's call count
+    if (!userCallCounts[username]) {
+      userCallCounts[username] = 0;
+    }
+    userCallCounts[username] += 1;
+
+    console.log(`${username} has made ${userCallCounts[username]} token calls`);
+
+    const embed = new EmbedBuilder()
+      .setColor(0xffd700)
+      .setTitle(`${username} called ${tokenSymbol} at $${marketCap}`)
+      .setThumbnail(tokenLogo || BOT_IMAGE_URL)
+      .addFields(
+        {
+          name: "Caller Profile",
+          value: `${username}`,
+          inline: true,
+        },
+        {
+          name: "Dex",
+          value: `[Dexscreener](https://dexscreener.com/search?q=${ca})`,
+          inline: true,
+        },
+        { name: "Token Address / CA", value: `\`${ca}\``, inline: false },
+        { name: "MCAP", value: marketCap.toString() || "NA", inline: true },
+        { name: "EXCHANGE", value: exchangeValue, inline: true }
+      )
+      .setTimestamp();
+
+    for (const [channelId, details] of Object.entries(channelMentions)) {
+      const channel = client.channels.cache.get(channelId);
+      const channelName = channel ? channel.name : "Unknown Channel";
+      embed.addFields({
+        name: `${channelName} called ${details.count} times`,
+        value: details.messages.join("\n"),
+        inline: false,
+      });
+    }
+    saveCaTrackerToFile();
+    alertChannel.send({ embeds: [embed] });
+  }
 }
 
 client.on("messageCreate", async (message) => {
@@ -343,8 +495,7 @@ client.on("messageCreate", async (message) => {
     for (const ca in caTracker) {
       if (caTracker[ca][0].username === username) {
         const tokenSymbol = caTracker[ca][0].tokenSymbol || "Unknown";
-        const roi =
-          caTracker[ca][0].roi !== null ? parseFloat(caTracker[ca][0].roi) : 0;
+        const roi = caTracker[ca][0].roi !== null ? parseFloat(caTracker[ca][0].roi) : 0;
         const timestamp = caTracker[ca][0].timestamp;
         const channelId = caTracker[ca][0].channelId;
         const isWin = caTracker[ca][0].isWin;
@@ -366,11 +517,9 @@ client.on("messageCreate", async (message) => {
     }
 
     // Calculate average ROI if there are any valid ROIs
-    const averageRoi =
-      totalRoiCount > 0 ? (totalRoiSum / totalRoiCount).toFixed(2) : "0";
+    const averageRoi = totalRoiCount > 0 ? (totalRoiSum / totalRoiCount).toFixed(2) : "0";
     // Calculate win rate
-    const winRate =
-      wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(2) : "0";
+    const winRate = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(2) : "0";
 
     // Format the call details and group details
     callDetails.sort((a, b) => b.timestamp - a.timestamp);
@@ -402,30 +551,13 @@ client.on("messageCreate", async (message) => {
     embed.addFields(
       {
         name: `**${username}**`,
-        value:
-          `Winrate: \`${winRate}%\` ${getEmojiForWinRate(
-            winRate
-          )} | Avg ROI: \`${averageRoi}%\` ${getEmojiForRoi(averageRoi)}\n` +
-          `Wins: \`${wins}\` | Losses: \`${losses}\` | Total Calls: \`${
-            wins + losses
-          }\``,
+        value: `Winrate: \`${winRate}%\` ${getEmojiForWinRate(winRate)} | Avg ROI: \`${averageRoi}%\` ${getEmojiForRoi(averageRoi)}\n` +
+          `Wins: \`${wins}\` | Losses: \`${losses}\` | Total Calls: \`${wins + losses}\``,
         inline: false,
       },
-      {
-        name: "**Tokens Called and ROIs**",
-        value: formattedRoiDetails.join("\n") || "None",
-        inline: true,
-      },
-      {
-        name: "**Most Recent Calls**",
-        value: formattedCallDetails.join("\n") || "None",
-        inline: true,
-      },
-      {
-        name: "**Groups**",
-        value: formattedGroupDetails || "None",
-        inline: true,
-      }
+      { name: '**Tokens Called and ROIs**', value: formattedRoiDetails.join("\n") || "None", inline: true },
+      { name: '**Most Recent Calls**', value: formattedCallDetails.join("\n") || "None", inline: true },
+      { name: '**Groups**', value: formattedGroupDetails || "None", inline: true }
     );
 
     // Send the embed to the alert channel
@@ -488,11 +620,9 @@ client.on("messageCreate", async (message) => {
         }
 
         // Calculate average ROI if there are any valid ROIs
-        const averageRoi =
-          totalRoiCount > 0 ? (totalRoiSum / totalRoiCount).toFixed(2) : "0";
+        const averageRoi = totalRoiCount > 0 ? (totalRoiSum / totalRoiCount).toFixed(2) : "0";
         // Calculate win rate
-        const winRate =
-          wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(2) : "0";
+        const winRate = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(2) : "0";
 
         // Format the call details and group details
         callDetails.sort((a, b) => b.timestamp - a.timestamp);
@@ -524,32 +654,13 @@ client.on("messageCreate", async (message) => {
         embed.addFields(
           {
             name: `**${username}**`,
-            value:
-              `Winrate: \`${winRate}%\` ${getEmojiForWinRate(
-                winRate
-              )} | Avg ROI: \`${averageRoi}%\` ${getEmojiForRoi(
-                averageRoi
-              )}\n` +
-              `Wins: \`${wins}\` | Losses: \`${losses}\` | Total Calls: \`${
-                wins + losses
-              }\``,
+            value: `Winrate: \`${winRate}%\` ${getEmojiForWinRate(winRate)} | Avg ROI: \`${averageRoi}%\` ${getEmojiForRoi(averageRoi)}\n` +
+              `Wins: \`${wins}\` | Losses: \`${losses}\` | Total Calls: \`${wins + losses}\``,
             inline: false,
           },
-          {
-            name: "**Tokens Called and ROIs**",
-            value: formattedRoiDetails.join("\n") || "None",
-            inline: true,
-          },
-          {
-            name: "**Most Recent Calls**",
-            value: formattedCallDetails.join("\n") || "None",
-            inline: true,
-          },
-          {
-            name: "**Groups**",
-            value: formattedGroupDetails || "None",
-            inline: true,
-          }
+          { name: '**Tokens Called and ROIs**', value: formattedRoiDetails.join("\n") || "None", inline: true },
+          { name: '**Most Recent Calls**', value: formattedCallDetails.join("\n") || "None", inline: true },
+          { name: '**Groups**', value: formattedGroupDetails || "None", inline: true }
         );
       });
 
@@ -565,9 +676,7 @@ client.on("messageCreate", async (message) => {
     const embed = new EmbedBuilder()
       .setTitle("User Information")
       .setColor("#3498db")
-      .setDescription(
-        "Here are the details of all users in caTracker, ranked by win rate:"
-      )
+      .setDescription("Here are the details of all users in caTracker, ranked by win rate:")
       .setFooter({
         text: `Requested by ${message.author.username}`,
         iconURL: message.author.displayAvatarURL(),
@@ -616,31 +725,21 @@ client.on("messageCreate", async (message) => {
 
     // Convert userPerformance object to an array and sort by win rate
     const sortedUsers = Object.entries(userPerformance).sort(([, a], [, b]) => {
-      const winRateA =
-        a.wins + a.losses > 0 ? (a.wins / (a.wins + a.losses)) * 100 : 0;
-      const winRateB =
-        b.wins + b.losses > 0 ? (b.wins / (b.wins + b.losses)) * 100 : 0;
+      const winRateA = a.wins + a.losses > 0 ? (a.wins / (a.wins + a.losses)) * 100 : 0;
+      const winRateB = b.wins + b.losses > 0 ? (b.wins / (b.wins + b.losses)) * 100 : 0;
       return winRateB - winRateA;
     });
 
     sortedUsers.forEach(([username, data], index) => {
-      const winRate =
-        data.wins + data.losses > 0
-          ? ((data.wins / (data.wins + data.losses)) * 100).toFixed(2)
-          : 0;
-      const avgRoi =
-        data.roiCount > 0 ? (data.roiSum / data.roiCount).toFixed(2) : "0";
+      const winRate = data.wins + data.losses > 0 ? ((data.wins / (data.wins + data.losses)) * 100).toFixed(2) : 0;
+      const avgRoi = data.roiCount > 0 ? (data.roiSum / data.roiCount).toFixed(2) : "0";
 
       // Format the call details and group details
       data.callDetails.sort((a, b) => b.timestamp - a.timestamp);
       data.roiDetails.sort((a, b) => b.roi - a.roi);
 
-      const formattedRoiDetails = data.roiDetails.map(
-        ({ tokenSymbol, roi }) => `${tokenSymbol} \`${roi}%\``
-      );
-      const formattedCallDetails = data.callDetails
-        .slice(0, 3)
-        .map(({ tokenSymbol, roi }) => `${tokenSymbol} \`${roi}%\``);
+      const formattedRoiDetails = data.roiDetails.map(({ tokenSymbol, roi }) => `${tokenSymbol} \`${roi}%\``);
+      const formattedCallDetails = data.callDetails.slice(0, 3).map(({ tokenSymbol, roi }) => `${tokenSymbol} \`${roi}%\``);
 
       const formattedGroupDetails = [...data.groupDetails].map((channelId) => {
         const channel = client.channels.cache.get(channelId);
@@ -651,29 +750,13 @@ client.on("messageCreate", async (message) => {
       embed.addFields(
         {
           name: `**#${index + 1}. ${username}**`,
-          value: `Winrate: \`${winRate}%\` ${getEmojiForWinRate(
-            winRate
-          )} | Avg ROI: \`${avgRoi}%\` ${getEmojiForRoi(avgRoi)}
-          Wins: \`${data.wins}\` | Losses: \`${
-            data.losses
-          }\` | Total Calls: \`${data.wins + data.losses}\``,
+          value: `Winrate: \`${winRate}%\` ${getEmojiForWinRate(winRate)} | Avg ROI: \`${avgRoi}%\` ${getEmojiForRoi(avgRoi)}
+          Wins: \`${data.wins}\` | Losses: \`${data.losses}\` | Total Calls: \`${data.wins + data.losses}\``,
           inline: false,
         },
-        {
-          name: "**Tokens Called and ROIs:**",
-          value: formattedRoiDetails.join("\n") || "None",
-          inline: true,
-        },
-        {
-          name: "**Most Recent Calls:**",
-          value: formattedCallDetails.join("\n") || "None",
-          inline: true,
-        },
-        {
-          name: "**Groups:**",
-          value: formattedGroupDetails.join("\n") || "None",
-          inline: true,
-        }
+        { name: '**Tokens Called and ROIs:**', value: formattedRoiDetails.join("\n") || "None", inline: true },
+        { name: '**Most Recent Calls:**', value: formattedCallDetails.join("\n") || "None", inline: true },
+        { name: '**Groups:**', value: formattedGroupDetails.join("\n") || "None", inline: true }
       );
     });
 
@@ -712,186 +795,16 @@ client.on("messageCreate", async (message) => {
           tokenSymbol: null,
         },
       ];
+      // saveCaTrackerToFile();
       // Continue with alerting or any other logic
       await checkAndSendAlert(ca);
     });
   }
 });
 
-async function checkAllTimeHighs() {
-  const alertChannel = client.channels.cache.get(ALERT_CHANNEL_ID);
-
-  if (!alertChannel) {
-    console.error(`Alert channel with ID ${ALERT_CHANNEL_ID} not found.`);
-    return;
-  }
-
-  for (const ca of Object.keys(caTracker)) {
-    const { marketCap } = await getTokenMetadata(ca);
-
-    if (marketCap == null) {
-      console.log(`Incomplete MC data for token ${ca}: ATH is ${marketCap}`);
-      delete caTracker[ca];
-      continue; // Skip to the next iteration
-    }
-
-    const username = caTracker[ca][0].username;
-    const userId = caTracker[ca][0].userId; // Retrieve the user ID from caTracker
-    const usernameMention = `<@${userId}>`;
-    const tokenSymbol = caTracker[ca][0].tokenSymbol;
-
-    // Retrieve the number of calls made by this user
-    const totalCallsByUser = userCallCounts[username] || 0;
-
-    // Store the market cap at the time of the call if it doesn't exist
-    if (!caTracker[ca].initialMarketCap) {
-      caTracker[ca].initialMarketCap = marketCap;
-    }
-
-    // Initialize allTimeHigh with the initial market cap if not already set
-    if (!caTracker[ca].allTimeHigh) {
-      caTracker[ca].allTimeHigh = caTracker[ca].initialMarketCap;
-    }
-
-    const initialMarketCap = caTracker[ca].initialMarketCap;
-
-    // Calculate ROI whenever the market cap changes
-    if (marketCap > caTracker[ca].allTimeHigh && marketCap > initialMarketCap) {
-      caTracker[ca].allTimeHigh = marketCap;
-      caTracker[ca][0].isWin = true;
-
-      // Update ROI calculation after setting new ATH
-      const allTimeHighRoi = transformValue(caTracker[ca].allTimeHigh);
-      const initialMarketCapRoi = transformValue(initialMarketCap);
-      const newRoi =
-        ((allTimeHighRoi - initialMarketCapRoi) / initialMarketCapRoi) * 100;
-      caTracker[ca][0].roi = newRoi.toFixed(2);
-
-      console.log(
-        `caTracker[ca].roi for ${tokenSymbol}: ${caTracker[ca][0].roi}%`
-      );
-
-      const embed = new EmbedBuilder()
-        .setColor(0xff0000)
-        .setTitle(
-          `${tokenSymbol} just reached a marketCap of ${marketCap}, new all-time high!`
-        )
-        .setThumbnail(BOT_IMAGE_URL)
-        .addFields(
-          {
-            name: "Caller Profile",
-            value: `${usernameMention} (Total Calls: ${totalCallsByUser})`,
-            inline: true,
-          },
-          {
-            name: "Called at",
-            value: initialMarketCap.toString() || "NA",
-            inline: true,
-          },
-          {
-            name: "ATH MCAP",
-            value: caTracker[ca].allTimeHigh.toString() || "NA",
-            inline: true,
-          }
-        )
-        .setTimestamp();
-
-      alertChannel.send({ embeds: [embed] });
-    } else {
-      console.log(
-        `${tokenSymbol} of ${marketCap} MC did not pass ATH of ${caTracker[ca].allTimeHigh}`
-      );
-    }
-    console.log("-------------------------------");
-  }
-}
-
-async function checkAndSendAlert(ca) {
-  const alertChannel = client.channels.cache.get(ALERT_CHANNEL_ID);
-
-  if (!alertChannel) {
-    console.error(`Alert channel with ID ${ALERT_CHANNEL_ID} not found.`);
-    return;
-  }
-
-  const { tokenName, tokenSymbol, tokenLogo, marketCap, exchangeValue } =
-    await getTokenMetadata(ca);
-
-  const isIncomplete = !tokenName || !tokenSymbol || marketCap == null;
-
-  caTracker[ca][0].tokenName = tokenName;
-  caTracker[ca][0].tokenSymbol = tokenSymbol;
-
-  if (isIncomplete) {
-    console.log(`Incomplete data for token ${ca}: marketCap is ${marketCap}`);
-    delete caTracker[ca];
-    return; // Exit early if data is incomplete
-  } else {
-    const channelMentions = caTracker[ca].reduce((acc, entry) => {
-      if (!acc[entry.channelId]) {
-        acc[entry.channelId] = { count: 0, messages: [] };
-      }
-      acc[entry.channelId].count++;
-      acc[entry.channelId].messages.push(
-        `[Message tracked at <t:${Math.floor(entry.timestamp / 1000)}:T>](${
-          entry.messageLink
-        }) by ${entry.username}`
-      );
-      return acc;
-    }, {});
-
-    const username = caTracker[ca][0].username;
-    const userId = caTracker[ca][0].userId; // Retrieve the user ID from caTracker
-    const usernameMention = `<@${userId}>`;
-
-    // Increment the user's call count
-    if (!userCallCounts[username]) {
-      userCallCounts[username] = 0;
-    }
-    userCallCounts[username] += 1;
-
-    console.log(`${username} has made ${userCallCounts[username]} token calls`);
-
-    // Retrieve the number of calls made by this user
-    const totalCallsByUser = userCallCounts[username] || 0;
-
-    const embed = new EmbedBuilder()
-      .setColor(0xffd700)
-      .setTitle(`${username} called ${tokenSymbol} at $${marketCap}`)
-      .setThumbnail(tokenLogo || BOT_IMAGE_URL)
-      .addFields(
-        {
-          name: "Caller Profile",
-          value: `${username} (Total Calls: ${totalCallsByUser})`,
-          inline: true,
-        },
-        {
-          name: "Dex",
-          value: `[Dexscreener](https://dexscreener.com/search?q=${ca})`,
-          inline: true,
-        },
-        { name: "Token Address / CA", value: `\`${ca}\``, inline: false },
-        { name: "MCAP", value: marketCap.toString() || "NA", inline: true },
-        { name: "EXCHANGE", value: exchangeValue, inline: true }
-      )
-      .setTimestamp();
-
-    for (const [channelId, details] of Object.entries(channelMentions)) {
-      const channel = client.channels.cache.get(channelId);
-      const channelName = channel ? channel.name : "Unknown Channel";
-      embed.addFields({
-        name: `${channelName} called ${details.count} times`,
-        value: details.messages.join("\n"),
-        inline: false,
-      });
-    }
-
-    alertChannel.send({ embeds: [embed] });
-  }
-}
-
 client.once("ready", () => {
   console.log("Bot is online!");
+  console.log(`Logged in as ${client.user.tag}!`);
   setInterval(checkAllTimeHighs, CHECK_INTERVAL);
 });
 
