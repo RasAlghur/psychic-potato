@@ -2,9 +2,11 @@ import { createClient } from "redis";
 
 export const redisConnection = async () => {
   const client = createClient({
-    url: process.env.REDIS_HOST,
     password: process.env.REDIS_PASSWORD,
-    port: process.env.REDIS_PORT,
+    socket: {
+      host: process.env.REDIS_HOST,
+      port: process.env.REDIS_PORT,
+    },
   });
 
   client.on("error", (err) => {
